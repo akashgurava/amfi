@@ -5,7 +5,6 @@ import json
 import re
 import time
 from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -15,11 +14,11 @@ from typing_extensions import Any
 
 from .data import (
     RawFundHouseResponse,
+    RawNavPlanDetailsResponse,
+    RawNavResponse,
     RawSchemeAumResponse,
     RawSchemeDocumentResponse,
     RawSchemeResponse,
-    RawNavResponse,
-    RawNavPlanDetailsResponse,
 )
 from .error import (
     AppConfigError,
@@ -29,11 +28,6 @@ from .error import (
 from .utils import LOGGER
 
 DateLike = date | datetime | str
-ProgressCallback = Callable[[int, int, str | None, tuple[str, ...]], None]
-# SuccessCallback = Callable[
-#     [duckdb.DuckDBPyConnection, str, dict[str, Any], tqdm_asyncio[Never]],
-#     Awaitable[None] | None,
-# ]
 
 
 def _to_date(value: DateLike) -> date:
@@ -78,12 +72,6 @@ class RateLimitRule:
 
         return cls(max_requests=requests, window_seconds=seconds)
 
-    @classmethod
-    def per_n_minutes(cls, requests: int, minutes: float = 1) -> RateLimitRule:
-        """Create a rule like `N requests / minutes`."""
-
-        return cls(max_requests=requests, window_seconds=minutes * 60)
-
 
 class MultiWindowRateLimiter:
     """Composite rate limiter that enforces all configured fixed windows."""
@@ -120,30 +108,6 @@ class MultiWindowRateLimiter:
                     return
 
             await asyncio.sleep(sleep_for)
-
-
-class _DateQueue:
-    """Async deque with support for front insertion (priority retries)."""
-
-    def __init__(self) -> None:
-        self._items: deque[str] = deque()
-        self._condition = asyncio.Condition()
-
-    async def put(self, item: str) -> None:
-        async with self._condition:
-            self._items.append(item)
-            self._condition.notify()
-
-    async def put_front(self, item: str) -> None:
-        async with self._condition:
-            self._items.appendleft(item)
-            self._condition.notify()
-
-    async def get(self) -> str:
-        async with self._condition:
-            while not self._items:
-                await self._condition.wait()
-            return self._items.popleft()
 
 
 class ResponsePayloadError(RuntimeError):
@@ -325,50 +289,6 @@ class AmfiClient:
 
         return fund_houses
 
-    # async def fetch_schemes(
-    #     self,
-    #     fund_houses: list[RawFundHouseResponse],
-    # ) -> tuple[
-    #     list[RawSchemeResponse],
-    #     list[RawSchemeDocumentResponse],
-    #     list[RawSchemeAumResponse],
-    # ]:
-    #     if self._client is None:
-    #         raise RuntimeError("HTTP client not initialized")
-
-    #     LOGGER.info(
-    #         "FETCH_SCHEMES_START: Processing %d fund houses", len(fund_houses)
-    #     )
-
-    #     # Step 1: Fetch scheme list for all fund houses
-    #     scheme_list = await self._fetch_scheme_list(fund_houses)
-    #     LOGGER.info(
-    #         "FETCH_SCHEME_LIST_COMPLETE: Collected %d schemes", len(scheme_list)
-    #     )
-
-    #     # Step 2: Fetch scheme details
-    #     raw_schemes = await self._fetch_scheme_details(scheme_list)
-    #     LOGGER.info(
-    #         "FETCH_SCHEME_DETAILS_COMPLETE: Fetched %d scheme details",
-    #         len(raw_schemes),
-    #     )
-
-    #     # Step 3: Fetch scheme documents
-    #     raw_scheme_documents = await self._fetch_scheme_documents(scheme_list)
-    #     LOGGER.info(
-    #         "FETCH_SCHEME_DOCUMENTS_COMPLETE: Fetched %d scheme documents",
-    #         len(raw_scheme_documents),
-    #     )
-
-    #     # Step 4: Fetch scheme AUM
-    #     raw_scheme_aum = await self._fetch_scheme_aum(scheme_list)
-    #     LOGGER.info(
-    #         "FETCH_SCHEME_AUM_COMPLETE: Fetched %d scheme AUM records",
-    #         len(raw_scheme_aum),
-    #     )
-
-    #     return raw_schemes, raw_scheme_documents, raw_scheme_aum
-
     async def fetch_scheme_list(
         self, fund_houses: list[RawFundHouseResponse]
     ) -> list[SchemeListItem]:
@@ -509,13 +429,16 @@ class AmfiClient:
     async def fetch_date(
         self, nav_date: DateLike
     ) -> tuple[list[RawNavPlanDetailsResponse], list[RawNavResponse]]:
-        """Fetch NAV JSON for a single date.
+        """Fetch NAV data for a single date.
 
         Args:
-            nav_date: Date input as `date`, `datetime`, or ISO string.
+            nav_date: Date input as `date`, `datetime`, or ISO `YYYY-MM-DD` string.
 
         Returns:
-            JSON response as a dictionary.
+            Tuple of ``(plan_details, navs)`` parsed from the AMFI response.
+            ``plan_details`` is a list of :class:`RawNavPlanDetailsResponse`
+            (one per unique ``sd_id`` seen in the payload) and ``navs`` is a
+            list of :class:`RawNavResponse` (one per NAV entry in the payload).
         """
         date_str = _date_key(nav_date)
         await self._rate_limiter.acquire()
@@ -603,7 +526,7 @@ class AmfiClient:
         params: dict[str, str] | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         if self._client is None:
-            raise RuntimeError("HTTP client not initialized")
+            raise HttpClientNotInitializedError()
 
         LOGGER.debug("FETCH_JSON: Acquiring rate limit for %s", context)
         await self._rate_limiter.acquire()

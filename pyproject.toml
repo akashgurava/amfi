@@ -46,4 +46,5 @@ disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
 markers = ["integration: tests that call live AMFI endpoints"]

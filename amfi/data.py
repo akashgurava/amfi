@@ -10,6 +10,7 @@ T_co = TypeVar("T_co", covariant=True)
 
 
 def _as_str(value: Any) -> str:
+    """Coerce ``value`` to a string, mapping ``None`` to the empty string."""
     return "" if value is None else str(value)
 
 
@@ -94,6 +95,8 @@ class RawFundHouseResponse:
 
 @dataclass(frozen=True)
 class RawSchemeResponse:
+    """Raw response from AMFI ``scheme-details`` API for one scheme."""
+
     mf_id: str
     mf_name: str
     scheme_id: str
@@ -131,6 +134,8 @@ class RawSchemeResponse:
 
 @dataclass(frozen=True)
 class RawSchemeDocumentResponse:
+    """Raw response from AMFI ``schemes/{id}/documents`` API."""
+
     scheme_id: str
     info_document_url: str
     summary_pdf_url: str
@@ -154,6 +159,8 @@ class RawSchemeDocumentResponse:
 
 @dataclass(frozen=True)
 class RawSchemeAumResponse:
+    """Raw response from AMFI ``scheme-data?strOption=AUM`` API."""
+
     str_mf_id: str
     str_sd_id: str
     scheme_nav_name: str
@@ -181,6 +188,8 @@ class RawSchemeAumResponse:
 
 @dataclass(frozen=True)
 class RawNavPlanDetailsResponse:
+    """Fund house/scheme/plan metadata derived from a NAV payload."""
+
     sd_id: str
     fund_house: str
     scheme: str
@@ -189,6 +198,8 @@ class RawNavPlanDetailsResponse:
 
 @dataclass(frozen=True)
 class RawNavResponse:
+    """Single NAV row from the AMFI ``nav-history`` API."""
+
     sd_id: str
     nav_name: str
     hnav_amt: str
@@ -991,6 +1002,14 @@ class NavView(View):
         CASE WHEN isin_ri = '' THEN NULL ELSE isin_ri END AS isin_reissue,
         CASE WHEN isin_po = '' THEN NULL ELSE isin_po END AS isin_repurchase
         """
+
+
+class PlansActiveView(View):
+    """Active plans view."""
+
+    @classmethod
+    def name(cls) -> str:
+        return "plans_active_v"
 
 
 RAW_TABLES: tuple[type[RawTable[Any]], ...] = (

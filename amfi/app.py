@@ -124,11 +124,26 @@ def parse_force_dates(force: str, *, today: date | None = None) -> list[date]:
 
 
 class App:
+    """High-level orchestrator gluing :class:`AmfiClient` to :class:`Database`.
+
+    Responsible for initializing schema and running the parallel fetch/save
+    stages for fund-houses, schemes, documents, AUM, and NAV history.
+    """
+
     def __init__(self, client: AmfiClient | None = None, db: Database | None = None):
+        """Create an App.
+
+        Args:
+            client: Pre-configured :class:`AmfiClient`. If ``None`` a default
+                client is constructed.
+            db: Pre-configured :class:`Database`. If ``None`` a database at
+                ``amfi.db`` is opened.
+        """
         self.client = client or AmfiClient()
         self.db = db or Database(db_path="amfi.db")
 
     def init_db(self) -> None:
+        """Create raw tables and (re)create all views."""
         self.db.create_raw()
         self.db.create_views()
 
@@ -141,6 +156,21 @@ class App:
         fetcher: Callable[[AmfiClient, SchemeListItem], Any],
         row_builder: Callable[[Any], list[Any]],
     ) -> None:
+        """Run a parallel fetch+write stage for a single raw table.
+
+        Filters schemes already present in ``table``, then fans out
+        ``fetcher`` over remaining items with the client's configured
+        concurrency and queues produced rows into a :class:`WriteQueue`.
+
+        Args:
+            label: Logging prefix for this stage (e.g. ``SAVE_FUND_SCHEMES``).
+            scheme_list: Full list of schemes to consider.
+            table: Target raw table class; existing IDs in this table are
+                skipped.
+            fetcher: Async callable producing a payload for one scheme.
+            row_builder: Converts the payload into a list of row objects to
+                insert into ``table``.
+        """
         existing_ids = set(self.db.get_existing_raw_table_ids(table))
         pending_schemes = [
             scheme for scheme in scheme_list if scheme.scheme_id not in existing_ids

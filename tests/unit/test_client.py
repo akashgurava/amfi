@@ -1,139 +1,144 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import httpx
 import pytest
 
 from amfi.client import (
     AmfiClient,
+    MultiWindowRateLimiter,
     RateLimitRule,
-    RequestExecutionError,
-    ResponsePayloadError,
+    _date_key,
+    _to_date,
 )
+from amfi.error import AppConfigError, HttpClientNotInitializedError
 
 
-@pytest.mark.asyncio
-async def test_fetch_date_builds_expected_request() -> None:
-    captured: list[httpx.Request] = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        return httpx.Response(200, json={"data": [{"mfName": "Sample"}]})
-
-    transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="https://www.amfiindia.com",
-    ) as http_client:
-        client = AmfiClient(client=http_client)
-        payload = await client.fetch_date("2010-01-01")
-
-    assert payload["data"][0]["mfName"] == "Sample"
-    assert len(captured) == 1
-    assert captured[0].url.path == "/api/nav-history"
-    assert captured[0].url.params["query_type"] == "all_for_date"
-    assert captured[0].url.params["from_date"] == "2010-01-01"
+def test_to_date_accepts_date_datetime_and_iso_string() -> None:
+    assert _to_date(date(2024, 1, 2)) == date(2024, 1, 2)
+    assert _to_date(datetime(2024, 1, 2, 10, 30)) == date(2024, 1, 2)
+    assert _to_date("2024-01-02") == date(2024, 1, 2)
 
 
-@pytest.mark.asyncio
-async def test_fetch_date_range_retries_failed_date_first() -> None:
-    call_order: list[str] = []
-    attempts: dict[str, int] = {}
-
-    class StubClient(AmfiClient):
-        async def fetch_date(self, nav_date: date | str) -> dict[str, object]:
-            key = nav_date if isinstance(nav_date, str) else nav_date.isoformat()
-            call_order.append(key)
-            attempts[key] = attempts.get(key, 0) + 1
-            if key == "2010-01-01" and attempts[key] == 1:
-                raise RuntimeError("retry me")
-            return {"date": key}
-
-    client = StubClient(parallel_requests=1, max_retries=2)
-    summary = await client.fetch_date_range("2010-01-01", "2010-01-02")
-
-    assert summary.results["2010-01-01"]["date"] == "2010-01-01"
-    assert summary.results["2010-01-02"]["date"] == "2010-01-02"
-    assert summary.failure_count == 0
-    assert call_order == ["2010-01-01", "2010-01-01", "2010-01-02"]
+def test_to_date_rejects_unsupported_type() -> None:
+    with pytest.raises(TypeError):
+        _to_date(12345)  # type: ignore[arg-type]
 
 
-@pytest.mark.asyncio
-async def test_fetch_date_range_records_failure_when_retries_exhausted() -> None:
-    class FailingClient(AmfiClient):
-        async def fetch_date(self, nav_date: date | str) -> dict[str, object]:
-            raise RuntimeError("always fails")
-
-    client = FailingClient(parallel_requests=1, max_retries=1)
-    summary = await client.fetch_date_range("2010-01-01", "2010-01-01")
-
-    assert summary.success_count == 0
-    assert summary.failure_count == 1
-    assert "2010-01-01" in summary.failed_dates
+def test_date_key_returns_iso_date() -> None:
+    assert _date_key("2024-01-02") == "2024-01-02"
+    assert _date_key(date(2024, 1, 2)) == "2024-01-02"
 
 
 def test_rate_limit_rule_validation() -> None:
     with pytest.raises(ValueError, match="max_requests"):
         RateLimitRule(max_requests=0, window_seconds=1)
-
     with pytest.raises(ValueError, match="window_seconds"):
         RateLimitRule(max_requests=1, window_seconds=0)
 
 
-@pytest.mark.asyncio
-async def test_fetch_date_range_does_not_retry_payload_errors() -> None:
-    call_order: list[str] = []
-
-    class PayloadErrorClient(AmfiClient):
-        async def fetch_date(self, nav_date: date | str) -> dict[str, object]:
-            key = nav_date if isinstance(nav_date, str) else nav_date.isoformat()
-            call_order.append(key)
-            if key == "2010-01-01":
-                raise ResponsePayloadError("invalid response payload")
-            return {"date": key}
-
-    client = PayloadErrorClient(parallel_requests=1, max_retries=5)
-    summary = await client.fetch_date_range("2010-01-01", "2010-01-02")
-
-    assert summary.success_count == 1
-    assert summary.failure_count == 1
-    assert "2010-01-01" in summary.failed_dates
-    assert call_order == ["2010-01-01", "2010-01-02"]
+def test_rate_limit_rule_per_seconds_factory() -> None:
+    rule = RateLimitRule.per_seconds(5, 2)
+    assert rule.max_requests == 5
+    assert rule.window_seconds == 2
 
 
 @pytest.mark.asyncio
-async def test_fetch_date_range_aborts_after_consecutive_errors() -> None:
-    class AlwaysFailClient(AmfiClient):
-        async def fetch_date(self, nav_date: date | str) -> dict[str, object]:
-            raise RequestExecutionError("rate limit simulated")
-
-    client = AlwaysFailClient(parallel_requests=1, max_retries=None)
-    summary = await client.fetch_date_range(
-        "2010-01-01",
-        "2010-01-05",
-        consecutive_error_limit=3,
-    )
-
-    assert summary.aborted is True
-    assert summary.abort_reason is not None
-    assert summary.failure_count >= 3
+async def test_multi_window_rate_limiter_noop_without_rules() -> None:
+    limiter = MultiWindowRateLimiter()
+    # Should return immediately.
+    await limiter.acquire()
 
 
 @pytest.mark.asyncio
-async def test_fetch_scheme_details_parses_response() -> None:
-    # Minimal reproduction of the React Server Components payload
-    # The parser expects:
-    # self.__next_f.push([1,"c:[\"$\",\"$L17\",null,{\"mutualFunds\":...
-    # The string inside is a JSON string representing the array structure.
+async def test_amfi_client_rejects_invalid_parallel_requests() -> None:
+    with pytest.raises(AppConfigError):
+        AmfiClient(parallel_requests=-1)
 
-    # Inner JSON structure includes the full FundHouseResponse payload.
 
-    # Escaped as a string literal (what matches the regex group):
-    # c:[\"$\",\"$L17\",null,{\"mutualFunds\":[{\"mf_name\": \"Test Fund\", ...}]}]
+@pytest.mark.asyncio
+async def test_amfi_client_rejects_invalid_timeout() -> None:
+    with pytest.raises(AppConfigError):
+        AmfiClient(timeout_seconds=0)
 
-    # We need to be careful with escaping for the Python string literal to represent
-    # the HTML content.
+
+@pytest.mark.asyncio
+async def test_amfi_client_rejects_negative_max_retries() -> None:
+    with pytest.raises(AppConfigError):
+        AmfiClient(max_retries=-1)
+
+
+@pytest.mark.asyncio
+async def test_fetch_date_without_context_manager_raises() -> None:
+    client = AmfiClient()
+    with pytest.raises(HttpClientNotInitializedError):
+        await client.fetch_date("2024-01-01")
+
+
+@pytest.mark.asyncio
+async def test_fetch_date_builds_expected_request_and_parses_tuple() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "mfName": "Sample MF",
+                        "schemes": [
+                            {
+                                "schemeName": "Sample Scheme",
+                                "navs": [
+                                    {
+                                        "SD_ID": "101",
+                                        "NAV_Name": "Sample - Direct - Growth",
+                                        "hNAV_Amt": "12.3456",
+                                        "ISIN_RI": "",
+                                        "ISIN_PO": "INF000000001",
+                                        "hNAV_Date": "2024-01-02T00:00:00.000Z",
+                                        "hNAV_Dtstamp": "2024-01-02T20:00:00Z",
+                                        "hNAV_reissue": "",
+                                        "hNAV_repurchase": "",
+                                        "hNAV_Upload_display": "02 Jan 2024 20:00:00",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://www.amfiindia.com",
+    ) as http:
+        client = AmfiClient(client=http)
+        plan_details, navs = await client.fetch_date("2024-01-02")
+
+    assert len(captured) == 1
+    assert captured[0].url.path == "/api/nav-history"
+    assert captured[0].url.params["query_type"] == "all_for_date"
+    assert captured[0].url.params["from_date"] == "2024-01-02"
+
+    assert len(plan_details) == 1
+    assert plan_details[0].sd_id == "101"
+    assert plan_details[0].fund_house == "Sample MF"
+    assert plan_details[0].scheme == "Sample Scheme"
+    assert plan_details[0].plan == "Sample - Direct - Growth"
+
+    assert len(navs) == 1
+    assert navs[0].sd_id == "101"
+    assert navs[0].hnav_amt == "12.3456"
+    assert navs[0].isin_po == "INF000000001"
+
+
+@pytest.mark.asyncio
+async def test_fetch_fund_house_details_parses_next_payload() -> None:
     payload_inner = (
         r"c:[\"$\",\"$L17\",null,{\"mutualFunds\":"
         r"[{\"mf_id\": \"123\", \"mf_name\": \"Test Fund\", "
@@ -152,29 +157,30 @@ async def test_fetch_scheme_details_parses_response() -> None:
         r"\"statement_of_information\": \"\", \"scheme_wise\": \"\", "
         r"\"icon_wordmark\": {}, \"icons\": []}]}]"
     )
-
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <body>
-        <script>
-            self.__next_f.push([1,"{payload_inner}"])
-        </script>
-    </body>
-    </html>
+    html = f"""
+    <html><body>
+    <script>self.__next_f.push([1,"{payload_inner}"])</script>
+    </body></html>
     """
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text=html_content)
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(
-        transport=transport,
-        base_url="https://www.amfiindia.com",
-    ) as http_client:
-        client = AmfiClient(client=http_client)
-        schemes = await client.fetch_fund_house_details()
+        transport=transport, base_url="https://www.amfiindia.com"
+    ) as http:
+        client = AmfiClient(client=http)
+        fund_houses = await client.fetch_fund_house_details()
 
-    assert len(schemes) == 1
-    assert schemes[0].mf_name == "Test Fund"
-    assert schemes[0].mf_id == "123"
+    assert len(fund_houses) == 1
+    assert fund_houses[0].mf_id == "123"
+    assert fund_houses[0].mf_name == "Test Fund"
+    assert fund_houses[0].amc_name == "Test AMC"
+
+
+@pytest.mark.asyncio
+async def test_client_context_manager_opens_and_closes() -> None:
+    async with AmfiClient() as client:
+        assert client._client is not None
+    assert client._client is None

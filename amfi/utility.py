@@ -15,6 +15,12 @@ TItem = TypeVar("TItem")
 
 
 class ParallelRunner(Generic[TItem]):
+    """Run an async worker over a list of items with bounded concurrency.
+
+    Tracks per-item failures by exception type and renders a tqdm progress
+    bar with live counts of active/success/failed tasks.
+    """
+
     def __init__(
         self,
         *,
@@ -22,6 +28,11 @@ class ParallelRunner(Generic[TItem]):
         unit: str,
         concurrency: int,
     ) -> None:
+        """Args:
+        label: Progress-bar / log label for this run.
+        unit: Short unit string for the tqdm bar (e.g. ``"sch"``).
+        concurrency: Max number of concurrently in-flight workers.
+        """
         self.label = label
         self.unit = unit
         self.concurrency = concurrency
@@ -34,6 +45,18 @@ class ParallelRunner(Generic[TItem]):
         id_getter: Callable[[TItem], str],
         worker: Callable[[TItem], Awaitable[None]],
     ) -> set[str]:
+        """Execute ``worker`` for every item in ``items`` in parallel.
+
+        Args:
+            items: Items to dispatch.
+            id_getter: Extracts a stable string ID per item, used for logging
+                and for the returned failure set.
+            worker: Async callable invoked once per item. Exceptions are
+                caught and recorded in :attr:`failed_by_type`.
+
+        Returns:
+            Set of IDs whose ``worker`` call raised.
+        """
         self.failed_by_type = {}
         failed_ids: set[str] = set()
 
@@ -111,13 +134,30 @@ class ParallelRunner(Generic[TItem]):
 
 @dataclass(frozen=True)
 class WriteJob:
+    """Single write-queue item: a row and its destination table.
+
+    ``item_id`` is used to track writes back to the producing item so that
+    per-item write failures can be reported alongside fetch failures.
+    """
+
     table: type[RawTable[Any]]
     row: Any
     item_id: str
 
 
 class WriteQueue:
+    """Serializes DuckDB writes from many async producers through one task.
+
+    DuckDB connections are not safe for concurrent use, so producers push
+    :class:`WriteJob` items onto this queue and a single consumer task
+    performs the inserts.
+    """
+
     def __init__(self, db: Database, *, label: str) -> None:
+        """Args:
+        db: Target :class:`Database`.
+        label: Logging prefix used for write-error messages.
+        """
         self._db = db
         self._label = label
         self._queue: asyncio.Queue[WriteJob | None] = asyncio.Queue()
@@ -128,13 +168,16 @@ class WriteQueue:
         self.success_count = 0
 
     async def start(self) -> None:
+        """Spawn the background consumer task (idempotent)."""
         if self._consumer_task is None:
             self._consumer_task = asyncio.create_task(self._consume())
 
     async def put(self, job: WriteJob) -> None:
+        """Enqueue a write job."""
         await self._queue.put(job)
 
     async def stop(self) -> None:
+        """Signal the consumer to drain and exit, then await it."""
         await self._queue.put(None)
         if self._consumer_task is not None:
             await self._consumer_task

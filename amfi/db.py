@@ -23,7 +23,10 @@ from .utils import LOGGER
 
 
 class Database:
+    """Thin DuckDB wrapper with typed helpers for raw tables and views."""
+
     def __init__(self, db_path: str):
+        """Open (or create) a DuckDB database at ``db_path``."""
         self.db_path = db_path
         try:
             self.conn = duckdb.connect(db_path)
@@ -79,6 +82,7 @@ class Database:
             ) from exc
 
     def create_raw(self, if_not_exists: bool = True, replace: bool = False) -> None:
+        """Create all raw tables declared in :data:`RAW_TABLES`."""
         LOGGER.debug("CREATE_RAW_TABLES.")
 
         for table in RAW_TABLES:
@@ -86,6 +90,11 @@ class Database:
             self._execute(sql, operation=f"CREATE_RAW_{table.name().upper()}")
 
     def insert(self, table: RawTable[T], row: T) -> None:
+        """Insert a single dataclass row into ``table``.
+
+        Validates that ``row`` is the expected dataclass type and that every
+        value is a string (raw tables are all TEXT-typed).
+        """
         expected_type = table.row_type()
         if not isinstance(row, expected_type):
             raise TypeError(
@@ -116,6 +125,7 @@ class Database:
         )
 
     def insert_fund_houses(self, fund_houses: Sequence[RawFundHouseResponse]) -> None:
+        """Insert fund-house rows one-by-one into ``raw_fund_house``."""
         for fund_house in fund_houses:
             self.insert(RawFundHouse, fund_house)
 
@@ -145,6 +155,7 @@ class Database:
         )
 
     def get_existing_raw_table_ids(self, table: type[RawTable[T]]) -> list[str]:
+        """Return distinct primary-id values already persisted in ``table``."""
         sql = table.existing_id_sql()
         rows = self._fetchall(
             sql, operation=f"SELECT_EXISTING_{table.name().upper()}_IDS"
@@ -152,6 +163,7 @@ class Database:
         return [str(row[0]) for row in rows if row and row[0] is not None]
 
     def get_missing_nav_dates(self) -> set[date]:
+        """Return dates in [2010-01-01, yesterday] with no rows in ``raw_nav``."""
         sql = """
         WITH date_series AS (
             select generate_series::date as date
@@ -177,8 +189,10 @@ class Database:
         self._execute(create_sql, operation=f"CREATE_VIEW_{view.name().upper()}")
 
     def create_views(self) -> None:
+        """Run pre-checks and (re)create every view in :data:`VIEWS`."""
         for view in VIEWS:
             self._create_view(view)
 
     def close(self) -> None:
+        """Close the underlying DuckDB connection."""
         self.conn.close()
