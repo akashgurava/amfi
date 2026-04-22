@@ -1,0 +1,20 @@
+{
+  "python.testing.pytestArgs": ["tests"],
+  "python.testing.unittestEnabled": true,
+  "python.testing.pytestEnabled": true,
+  "workbench.editorAssociations": {
+    "*.parquet": "duckdb.dataFileViewer",
+    "*.csv": "duckdb.dataFileViewer",
+    "*.tsv": "duckdb.dataFileViewer"
+  },
+  "duckdb.databases": [
+    {
+      "alias": "amfi",
+      "type": "file",
+      "path": "/Users/a81059860/Documents/Personal/amfi/amfi.duckdb",
+      "readOnly": false,
+      "attached": false
+    }
+  ],
+  "duckdb.defaultDatabase": "amfi"
+}
