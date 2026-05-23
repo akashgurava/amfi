@@ -67,7 +67,7 @@ async def test_parallel_runner_enforces_concurrency_limit() -> None:
 @pytest.mark.asyncio
 async def test_write_queue_persists_jobs_and_tracks_success(tmp_path: Path) -> None:
     db = Database(db_path=str(tmp_path / "wq.duckdb"))
-    db.create_raw()
+    db.create_database_objects()
 
     queue = WriteQueue(db, label="TEST")
     await queue.start()
@@ -83,7 +83,7 @@ async def test_write_queue_persists_jobs_and_tracks_success(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_write_queue_records_failures_per_item(tmp_path: Path) -> None:
     db = Database(db_path=str(tmp_path / "wq.duckdb"))
-    db.create_raw()
+    db.create_database_objects()
 
     # Pass a non-dataclass row so `insert` raises TypeError.
     bad_job = WriteJob(table=RawFundHouse, row="not-a-dataclass", item_id="bad")

@@ -1,13 +1,18 @@
 from collections.abc import Sequence
 from dataclasses import fields, is_dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import duckdb
 
 from .data import (
+    DEDUP_VIEWS,
+    DERIVED_OBJECTS,
+    METRICS_PERIOD_VIEWS,
+    METRICS_TABLES,
     RAW_TABLES,
-    VIEWS,
+    MetricsConfig,
     RawFundHouse,
     RawFundHouseResponse,
     RawNav,
@@ -16,9 +21,9 @@ from .data import (
     RawNavResponse,
     RawTable,
     T,
-    View,
 )
-from .error import DatabaseExecutionError, DataValidationError
+from .error import DatabaseExecutionError
+from .portfolios import PortfolioBuilder, load_portfolios
 from .utils import LOGGER
 
 
@@ -42,6 +47,8 @@ class Database:
         *,
         operation: str,
     ) -> duckdb.DuckDBPyConnection:
+        """Helper to execute a SQL statement with optional parameters
+        with error handling."""
         try:
             if params is None:
                 return self.conn.execute(sql)
@@ -61,6 +68,8 @@ class Database:
         *,
         operation: str,
     ) -> list[tuple[Any, ...]]:
+        """Helper to execute a SQL statement with optional parameters
+        and fetch all results with error handling."""
         cursor = self._execute(sql, params, operation=operation)
         return cursor.fetchall()
 
@@ -71,6 +80,8 @@ class Database:
         *,
         operation: str,
     ) -> None:
+        """Helper to execute a SQL statement with optional parameters
+        and fetch all results with error handling."""
         try:
             self.conn.executemany(sql, params)
         except duckdb.Error as exc:
@@ -81,13 +92,40 @@ class Database:
                 cause=exc,
             ) from exc
 
-    def create_raw(self, if_not_exists: bool = True, replace: bool = False) -> None:
-        """Create all raw tables declared in :data:`RAW_TABLES`."""
-        LOGGER.debug("CREATE_RAW_TABLES.")
+    def create_database_objects(
+        self, if_not_exists: bool = True, replace: bool = False
+    ) -> None:
+        """Create all database objects (tables and views)."""
+        LOGGER.debug("CREATE_DATABASE_OBJECTS_START.")
 
+        LOGGER.debug("CREATE_RAW_TABLES")
         for table in RAW_TABLES:
-            sql = table.create(if_not_exists=if_not_exists, replace=replace)
-            self._execute(sql, operation=f"CREATE_RAW_{table.name().upper()}")
+            sql = table.create_sql(if_not_exists=if_not_exists, replace=replace)
+            self._execute(sql, operation=f"CREATE_TABLE_{table.name().upper()}")
+
+        LOGGER.debug("CREATE_DEDUP_VIEWS")
+        for view in DEDUP_VIEWS:
+            sql = view.create_sql()
+            self._execute(sql, operation=f"CREATE_VIEW_{view.name().upper()}")
+
+        LOGGER.debug("CREATE_DERIVED_OBJECTS")
+        for obj in DERIVED_OBJECTS:
+            sql = obj.create_sql(if_not_exists=if_not_exists, replace=replace)
+            self._execute(sql, operation=f"CREATE_{obj.__name__.upper()}")
+
+        LOGGER.debug("CREATE_METRICS_TABLES")
+        for metrics_table in METRICS_TABLES:
+            sql = metrics_table.create_sql(if_not_exists=if_not_exists, replace=replace)
+            self._execute(sql, operation=f"CREATE_TABLE_{metrics_table.name().upper()}")
+
+        LOGGER.debug("CREATE_METRICS_PERIOD_VIEWS")
+        for period_view in METRICS_PERIOD_VIEWS:
+            self._execute(
+                period_view.create_sql(),
+                operation=f"CREATE_VIEW_{period_view.name().upper()}",
+            )
+
+        LOGGER.debug("CREATE_DATABASE_OBJECTS_SUCCESS.")
 
     def insert(self, table: RawTable[T], row: T) -> None:
         """Insert a single dataclass row into ``table``.
@@ -176,22 +214,95 @@ class Database:
         rows = self._fetchall(sql, operation="SELECT_MISSING_NAV_DATES")
         return {row[0] for row in rows if row and row[0] is not None}
 
-    def _create_view(self, view: type[View]) -> None:
-        pre_check_sql = view.pre_check()
-        if pre_check_sql:
-            fail = self._fetchall(
-                pre_check_sql, operation=f"PRE_CHECK_{view.name().upper()}"
+    def _build_derived_object(self, obj: type[Any]) -> None:
+        """Populate one entry of :data:`DERIVED_OBJECTS`.
+
+        Views (``DedupView`` / ``DerivedView``) are re-emitted with
+        ``CREATE OR REPLACE VIEW`` so any body change propagates immediately.
+        Derived tables are refilled via ``DELETE FROM + INSERT INTO`` against
+        the pre-declared schema. Tables whose ``select_sql()`` raises
+        :class:`NotImplementedError` are skipped - those are placeholders
+        populated by external builders (e.g. :class:`PortfolioBuilder`).
+        """
+        name = obj.name()
+        # Duck-type: DerivedTable subclasses define ``columns`` + ``select_sql``
+        # + ``truncate``; Dedup/DerivedView do not have ``columns``. This
+        # avoids runtime Protocol checks (DerivedTable is not decorated with
+        # ``@runtime_checkable``).
+        if hasattr(obj, "columns") and hasattr(obj, "select_sql"):
+            try:
+                select_sql = obj.select_sql()
+            except NotImplementedError:
+                LOGGER.debug(
+                    "BUILD_DERIVED_SKIP. name=%s reason=externally_populated", name
+                )
+                return
+            self._execute(obj.truncate(), operation=f"TRUNCATE_{name.upper()}")
+            self._execute(
+                f"INSERT INTO {name}\n{select_sql}",
+                operation=f"INSERT_{name.upper()}",
             )
-            if fail:
-                raise DataValidationError(sql=pre_check_sql, failed_rows=fail)
+            LOGGER.debug("BUILD_DERIVED_TABLE. name=%s", name)
+            return
 
-        create_sql = view.create()
-        self._execute(create_sql, operation=f"CREATE_VIEW_{view.name().upper()}")
+        # View path: re-emit CREATE OR REPLACE VIEW.
+        self._execute(obj.create_sql(), operation=f"CREATE_VIEW_{name.upper()}")
+        LOGGER.debug("BUILD_DERIVED_VIEW. name=%s", name)
 
-    def create_views(self) -> None:
-        """Run pre-checks and (re)create every view in :data:`VIEWS`."""
-        for view in VIEWS:
-            self._create_view(view)
+    def build(
+        self,
+        config_path: Path | None = None,
+        metrics_config: MetricsConfig | None = None,
+    ) -> None:
+        """Populate the full derived + metrics stack.
+
+        Pure-insert pipeline that assumes schemas are already in place via
+        :meth:`create_database_objects` (called by :meth:`App.init_db`).
+        Order:
+
+        1. For each :data:`DERIVED_OBJECTS` entry: re-emit views /
+           truncate+insert derived tables. Placeholder tables populated by
+           external builders are skipped here.
+        2. :meth:`build_portfolios` fills ``plans_portfolios`` /
+           ``nav_portfolios`` when ``config_path`` is provided.
+        3. :meth:`build_metrics` fills every ``metrics_*`` table and emits
+           the per-period views.
+        """
+        LOGGER.info("BUILD_START. derived=%s", [o.name() for o in DERIVED_OBJECTS])
+        for obj in DERIVED_OBJECTS:
+            self._build_derived_object(obj)
+        self.build_portfolios(config_path)
+        self.build_metrics(metrics_config)
+        LOGGER.info("BUILD_SUCCESS.")
+
+    def build_portfolios(self, config_path: Path | None) -> None:
+        """Populate ``plans_portfolios`` + ``nav_portfolios`` from a YAML file.
+
+        Imported lazily; a missing ``config_path`` or missing file leaves the
+        empty placeholder tables in place.
+        """
+        if config_path is None:
+            LOGGER.info("BUILD_PORTFOLIOS_SKIP. No config path provided.")
+            return
+
+        portfolios = load_portfolios(config_path)
+        PortfolioBuilder(self, portfolios).build()
+
+    def build_metrics(
+        self,
+        config: MetricsConfig | None = None,
+        benchmark_sd_id: int = 120716,
+    ) -> None:
+        """Recompute the ``metrics_*`` tables from current ``nav`` + ``plans``.
+
+        Imported lazily to avoid a hard dependency on polars for callers that
+        only need raw fetches.
+        """
+        from .metrics import DatabaseMetricsAdapter
+
+        DatabaseMetricsAdapter(
+            self, benchmark_sd_id=benchmark_sd_id, config=config
+        ).build()
 
     def close(self) -> None:
         """Close the underlying DuckDB connection."""

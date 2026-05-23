@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+from pathlib import Path
 
 from amfi import (
     AmfiClient,
@@ -18,6 +19,14 @@ async def main() -> None:
         "--db",
         default="amfi.duckdb",
         help="Path to database file (default: amfi.duckdb)",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yml",
+        help=(
+            "Path to portfolio config YAML (default: config.yml). "
+            "If the file is absent, the build runs fund-only."
+        ),
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -43,6 +52,12 @@ async def main() -> None:
         ),
     )
 
+    # Subcommand: build (recreate dedup + derived views/tables, no fetch)
+    subparsers.add_parser(
+        "build",
+        help="Rebuild dedup views and derived views/tables from existing raw data",
+    )
+
     args = parser.parse_args()
 
     client = AmfiClient(
@@ -50,7 +65,8 @@ async def main() -> None:
         max_retries=3,
     )
     db = Database(db_path=args.db)
-    app = App(client, db)
+    config_path = Path(args.config) if args.config else None
+    app = App(client, db, config_path=config_path)
     app.init_db()
 
     try:
@@ -74,6 +90,9 @@ async def main() -> None:
                     force = args.dates
 
                 await app.save_nav(fetch_all=fetch_all, force=force)
+
+        elif args.command == "build":
+            app.build()
 
     except KeyboardInterrupt:
         logging.getLogger("amfi").warning("Interrupted by user")

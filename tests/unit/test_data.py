@@ -11,8 +11,8 @@ from amfi.data import (
     RawScheme,
     RawSchemeAum,
     RawSchemeDocument,
-    _as_str,
 )
+from amfi.data.raw import _as_str
 from amfi.error import AppConfigError
 
 
@@ -73,7 +73,7 @@ def test_raw_nav_response_uses_api_camel_case_keys() -> None:
 
 def test_raw_table_create_rejects_conflicting_flags() -> None:
     with pytest.raises(AppConfigError):
-        RawFundHouse.create(if_not_exists=True, replace=True)
+        RawFundHouse.create_sql(if_not_exists=True, replace=True)
 
 
 def test_raw_table_insert_sql_has_correct_placeholder_count() -> None:

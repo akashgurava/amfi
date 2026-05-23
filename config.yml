@@ -1,0 +1,18 @@
+portfolios:
+  HDFC All Cap Conservative:
+    fund_house_id: 9
+    category: other
+    subcategory: index funds
+    weights:
+      149870: 50000
+      151724: 30000
+      151727: 20000
+
+  HDFC All Cap Aggressive:
+    fund_house_id: 9
+    category: other
+    subcategory: index funds
+    weights:
+      149870: 30000
+      151724: 40000
+      151727: 30000

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, timedelta
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from .client import AmfiClient, SchemeListItem
 from .data import (
-    RawFundHouseResponse,
     RawScheme,
     RawSchemeAum,
     RawSchemeDocument,
@@ -15,6 +15,9 @@ from .data import (
 from .db import Database
 from .utility import ParallelRunner, WriteJob, WriteQueue
 from .utils import LOGGER
+
+if TYPE_CHECKING:
+    from .data import RawFundHouseResponse
 
 BASE_START_DATE = date(2010, 1, 1)
 
@@ -130,7 +133,12 @@ class App:
     stages for fund-houses, schemes, documents, AUM, and NAV history.
     """
 
-    def __init__(self, client: AmfiClient | None = None, db: Database | None = None):
+    def __init__(
+        self,
+        client: AmfiClient | None = None,
+        db: Database | None = None,
+        config_path: Path | None = None,
+    ):
         """Create an App.
 
         Args:
@@ -138,14 +146,23 @@ class App:
                 client is constructed.
             db: Pre-configured :class:`Database`. If ``None`` a database at
                 ``amfi.db`` is opened.
+            config_path: Optional path to ``config.yml``.
+                Threaded into every :meth:`Database.build` /
+                :meth:`Database.build_portfolios` call triggered from this App.
         """
         self.client = client or AmfiClient()
         self.db = db or Database(db_path="amfi.db")
+        self.config_path = config_path
 
     def init_db(self) -> None:
-        """Create raw tables and (re)create all views."""
-        self.db.create_raw()
-        self.db.create_views()
+        """Create raw, derived, and metrics table schemas; (re)create dedup views.
+
+        After ``init_db`` the database has every table (raw + derived +
+        ``metrics_*``) created with its declared schema, plus every dedup
+        view. Derived views, per-period metrics views, and metric values
+        still require a subsequent :meth:`Database.build` call.
+        """
+        self.db.create_database_objects()
 
     async def _run_stage(
         self,
@@ -381,4 +398,14 @@ class App:
         if failed_ids:
             _log_failures_by_type("SAVE_NAV_FAILED", runner.failed_by_type)
 
+        self.db.build(config_path=self.config_path)
         LOGGER.info("SAVE_NAV_SUCCESS")
+
+    def build(self) -> None:
+        """Recreate dedup views, derived layer, portfolios, and metrics.
+
+        Convenience wrapper around :meth:`Database.build` that threads
+        ``self.config_path`` through so portfolios are rebuilt whenever
+        ``app.build()`` runs.
+        """
+        self.db.build(config_path=self.config_path)

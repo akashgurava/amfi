@@ -144,9 +144,8 @@ async def test_save_nav_skips_when_no_dates_to_fetch() -> None:
     db.bulk_insert_nav.assert_not_called()
 
 
-def test_init_db_creates_raw_tables_and_views() -> None:
+def test_init_db_creates_database_objects() -> None:
     client = MagicMock(spec=AmfiClient)
     db = MagicMock()
     App(client=client, db=db).init_db()
-    db.create_raw.assert_called_once()
-    db.create_views.assert_called_once()
+    db.create_database_objects.assert_called_once()
