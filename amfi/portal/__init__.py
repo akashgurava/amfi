@@ -1,27 +1,37 @@
-"""Compatibility shim re-exporting raw models and tables from amfi.portal."""
+"""AMFI Official Portal Crawler & Raw Tables domain."""
 
-from ..portal import (
-    PORTAL_RAW_TABLES,
-    RawFundHouse,
+from .client import (
+    AmfiClient,
+    MultiWindowRateLimiter,
+    RateLimitRule,
+    ResponsePayloadError,
+    SchemeListItem,
+)
+from .models import (
     RawFundHouseResponse,
-    RawNav,
-    RawNavPlanDetails,
     RawNavPlanDetailsResponse,
     RawNavResponse,
-    RawScheme,
-    RawSchemeAum,
     RawSchemeAumResponse,
-    RawSchemeDocument,
     RawSchemeDocumentResponse,
     RawSchemeResponse,
     _as_str,
 )
-
-RAW_TABLES = PORTAL_RAW_TABLES
+from .tables import (
+    PORTAL_RAW_TABLES,
+    RawFundHouse,
+    RawNav,
+    RawNavPlanDetails,
+    RawScheme,
+    RawSchemeAum,
+    RawSchemeDocument,
+)
 
 __all__ = [
+    "AmfiClient",
+    "MultiWindowRateLimiter",
     "PORTAL_RAW_TABLES",
-    "RAW_TABLES",
+    "RateLimitRule",
+    "ResponsePayloadError",
     "RawFundHouse",
     "RawFundHouseResponse",
     "RawNav",
@@ -34,5 +44,6 @@ __all__ = [
     "RawSchemeDocument",
     "RawSchemeDocumentResponse",
     "RawSchemeResponse",
+    "SchemeListItem",
     "_as_str",
 ]

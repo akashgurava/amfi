@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from .data.metrics import (
+from .tables import (
     METRICS_TABLES,
     Frequency,
     MetricsConfig,
@@ -894,7 +894,7 @@ class DatabaseMetricsAdapter:
         The benchmark ``sd_id`` column is renamed to its string
         representation so it can be used as a benchmark name.
         """
-        from .data.derived import NavView, PlansView
+        from ..derived import NavView, PlansView
 
         sql = f"""
         SELECT n.sd_id, n.date, n.nav
@@ -928,7 +928,7 @@ class DatabaseMetricsAdapter:
         Translates scheme (string sd_id) back to integer sd_id and joins
         the scheme name from ``plans``.
         """
-        from .data.derived import PlansView
+        from ..derived import PlansView
 
         expected_periods = period_order(freq, self.config.periods(freq))
         metric_cols = metrics_columns(metrics, expected_periods)

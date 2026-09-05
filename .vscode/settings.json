@@ -11,7 +11,7 @@
     {
       "alias": "amfi",
       "type": "file",
-      "path": "/Users/a81059860/Documents/Personal/amfi/amfi.duckdb",
+      "path": "/Users/a81059860/docs/Personal/amfi/amfi.duckdb",
       "readOnly": false,
       "attached": false
     }

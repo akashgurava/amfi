@@ -6,23 +6,28 @@ from typing import Any
 
 import duckdb
 
-from .data import (
-    DEDUP_VIEWS,
-    DERIVED_OBJECTS,
+from .core.base import RawTable, T
+from .derived import DEDUP_VIEWS, DERIVED_OBJECTS
+from .error import DatabaseExecutionError
+from .holdings import (
+    HOLDINGS_TABLES,
+    HOLDINGS_VIEWS,
+    HoldingsRepository,
+)
+from .metrics import (
     METRICS_PERIOD_VIEWS,
     METRICS_TABLES,
-    RAW_TABLES,
     MetricsConfig,
+)
+from .portal import (
+    PORTAL_RAW_TABLES,
     RawFundHouse,
     RawFundHouseResponse,
     RawNav,
     RawNavPlanDetails,
     RawNavPlanDetailsResponse,
     RawNavResponse,
-    RawTable,
-    T,
 )
-from .error import DatabaseExecutionError
 from .portfolios import PortfolioBuilder, load_portfolios
 from .utils import LOGGER
 
@@ -95,29 +100,40 @@ class Database:
     def create_database_objects(
         self, if_not_exists: bool = True, replace: bool = False
     ) -> None:
-        """Create all database objects (tables and views)."""
+        """Create all database objects across all domain packages in dependency order."""
         LOGGER.debug("CREATE_DATABASE_OBJECTS_START.")
 
-        LOGGER.debug("CREATE_RAW_TABLES")
-        for table in RAW_TABLES:
+        # 1. AMFI Portal raw tables
+        LOGGER.debug("CREATE_PORTAL_RAW_TABLES")
+        for table in PORTAL_RAW_TABLES:
             sql = table.create_sql(if_not_exists=if_not_exists, replace=replace)
             self._execute(sql, operation=f"CREATE_TABLE_{table.name().upper()}")
 
+        # 2. Holdings raw tables (sequences & master tables)
+        LOGGER.debug("CREATE_HOLDINGS_TABLES")
+        for table in HOLDINGS_TABLES:
+            sql = table.create_sql(if_not_exists=if_not_exists, replace=replace)
+            self._execute(sql, operation=f"CREATE_TABLE_{table.name().upper()}")
+
+        # 3. Deduplication views
         LOGGER.debug("CREATE_DEDUP_VIEWS")
         for view in DEDUP_VIEWS:
             sql = view.create_sql()
             self._execute(sql, operation=f"CREATE_VIEW_{view.name().upper()}")
 
+        # 4. Core derived tables & views
         LOGGER.debug("CREATE_DERIVED_OBJECTS")
         for obj in DERIVED_OBJECTS:
             sql = obj.create_sql(if_not_exists=if_not_exists, replace=replace)
             self._execute(sql, operation=f"CREATE_{obj.__name__.upper()}")
 
+        # 5. Metrics tables
         LOGGER.debug("CREATE_METRICS_TABLES")
         for metrics_table in METRICS_TABLES:
             sql = metrics_table.create_sql(if_not_exists=if_not_exists, replace=replace)
             self._execute(sql, operation=f"CREATE_TABLE_{metrics_table.name().upper()}")
 
+        # 6. Metrics period views
         LOGGER.debug("CREATE_METRICS_PERIOD_VIEWS")
         for period_view in METRICS_PERIOD_VIEWS:
             self._execute(
@@ -125,7 +141,22 @@ class Database:
                 operation=f"CREATE_VIEW_{period_view.name().upper()}",
             )
 
+        # 7. Holdings analytical views
+        LOGGER.debug("CREATE_HOLDINGS_VIEWS")
+        for holdings_view in HOLDINGS_VIEWS:
+            try:
+                self._execute(
+                    holdings_view.create_sql(replace=True),
+                    operation=f"CREATE_VIEW_{holdings_view.name().upper()}",
+                )
+            except Exception as e:
+                LOGGER.debug("Skipping view %s creation: %s", holdings_view.name(), e)
+
         LOGGER.debug("CREATE_DATABASE_OBJECTS_SUCCESS.")
+
+    def holdings_repo(self) -> HoldingsRepository:
+        """Get repository helper for persisting holdings and statements."""
+        return HoldingsRepository(self.conn)
 
     def insert(self, table: RawTable[T], row: T) -> None:
         """Insert a single dataclass row into ``table``.
@@ -225,10 +256,6 @@ class Database:
         populated by external builders (e.g. :class:`PortfolioBuilder`).
         """
         name = obj.name()
-        # Duck-type: DerivedTable subclasses define ``columns`` + ``select_sql``
-        # + ``truncate``; Dedup/DerivedView do not have ``columns``. This
-        # avoids runtime Protocol checks (DerivedTable is not decorated with
-        # ``@runtime_checkable``).
         if hasattr(obj, "columns") and hasattr(obj, "select_sql"):
             try:
                 select_sql = obj.select_sql()
@@ -245,7 +272,6 @@ class Database:
             LOGGER.debug("BUILD_DERIVED_TABLE. name=%s", name)
             return
 
-        # View path: re-emit CREATE OR REPLACE VIEW.
         self._execute(obj.create_sql(), operation=f"CREATE_VIEW_{name.upper()}")
         LOGGER.debug("BUILD_DERIVED_VIEW. name=%s", name)
 
@@ -254,20 +280,7 @@ class Database:
         config_path: Path | None = None,
         metrics_config: MetricsConfig | None = None,
     ) -> None:
-        """Populate the full derived + metrics stack.
-
-        Pure-insert pipeline that assumes schemas are already in place via
-        :meth:`create_database_objects` (called by :meth:`App.init_db`).
-        Order:
-
-        1. For each :data:`DERIVED_OBJECTS` entry: re-emit views /
-           truncate+insert derived tables. Placeholder tables populated by
-           external builders are skipped here.
-        2. :meth:`build_portfolios` fills ``plans_portfolios`` /
-           ``nav_portfolios`` when ``config_path`` is provided.
-        3. :meth:`build_metrics` fills every ``metrics_*`` table and emits
-           the per-period views.
-        """
+        """Populate the full derived + metrics stack."""
         LOGGER.info("BUILD_START. derived=%s", [o.name() for o in DERIVED_OBJECTS])
         for obj in DERIVED_OBJECTS:
             self._build_derived_object(obj)
@@ -276,11 +289,7 @@ class Database:
         LOGGER.info("BUILD_SUCCESS.")
 
     def build_portfolios(self, config_path: Path | None) -> None:
-        """Populate ``plans_portfolios`` + ``nav_portfolios`` from a YAML file.
-
-        Imported lazily; a missing ``config_path`` or missing file leaves the
-        empty placeholder tables in place.
-        """
+        """Populate ``plans_portfolios`` + ``nav_portfolios`` from a YAML file."""
         if config_path is None:
             LOGGER.info("BUILD_PORTFOLIOS_SKIP. No config path provided.")
             return
@@ -293,11 +302,7 @@ class Database:
         config: MetricsConfig | None = None,
         benchmark_sd_id: int = 120716,
     ) -> None:
-        """Recompute the ``metrics_*`` tables from current ``nav`` + ``plans``.
-
-        Imported lazily to avoid a hard dependency on polars for callers that
-        only need raw fetches.
-        """
+        """Recompute the ``metrics_*`` tables from current ``nav`` + ``plans``."""
         from .metrics import DatabaseMetricsAdapter
 
         DatabaseMetricsAdapter(

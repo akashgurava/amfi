@@ -1,6 +1,10 @@
-"""Compatibility shim re-exporting metrics tables and configs from amfi.metrics."""
+"""Fund return and risk metrics computation domain."""
 
-from ..metrics import (
+from .calculator import (
+    DatabaseMetricsAdapter,
+    MetricsBuilder,
+)
+from .tables import (
     METRICS_PERIOD_VIEWS,
     METRICS_TABLES,
     Frequency,
@@ -21,6 +25,7 @@ from ..metrics import (
 )
 
 __all__ = [
+    "DatabaseMetricsAdapter",
     "Frequency",
     "METRICS_PERIOD_VIEWS",
     "METRICS_TABLES",
@@ -30,6 +35,7 @@ __all__ = [
     "MetricsBenchmarkMonthlyTable",
     "MetricsBenchmarkQuarterlyTable",
     "MetricsBenchmarkYearlyTable",
+    "MetricsBuilder",
     "MetricsConfig",
     "MetricsPerformanceYearlyTable",
     "MetricsRiskMonthlyTable",

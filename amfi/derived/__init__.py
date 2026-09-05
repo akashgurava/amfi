@@ -1,6 +1,16 @@
-"""Compatibility shim re-exporting derived views from amfi.derived."""
+"""Derived business views and deduplication layer."""
 
-from ..derived import (
+from .dedup import (
+    DEDUP_VIEWS,
+    DedupView,
+    FundHouseView,
+    NavDedupView,
+    NavPlanDetailsView,
+    SchemeAumView,
+    SchemeDocumentView,
+    SchemeView,
+)
+from .views import (
     DERIVED_OBJECTS,
     NavActiveView,
     NavFundsTable,
@@ -14,14 +24,21 @@ from ..derived import (
 )
 
 __all__ = [
+    "DEDUP_VIEWS",
     "DERIVED_OBJECTS",
+    "DedupView",
+    "FundHouseView",
     "NavActiveView",
     "NavFundsTable",
+    "NavPlanDetailsView",
     "NavPortfoliosTable",
+    "NavView",
     "PlansActiveView",
     "PlansFundsTable",
     "PlansPortfoliosTable",
     "PlansView",
-    "NavView",
+    "SchemeAumView",
+    "SchemeDocumentView",
+    "SchemeView",
     "TaxCategoryTable",
 ]

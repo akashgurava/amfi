@@ -14,7 +14,17 @@ dependencies = [
     "pyyaml>=6.0",
     "requests>=2.34.2",
     "yfinance>=1.3.0",
+    "python-calamine>=0.8.2",
+    "xlrd>=2.0.2",
+    "openpyxl>=3.1.5",
 ]
+
+[project.scripts]
+amfi = "amfi.__main__:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [

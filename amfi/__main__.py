@@ -29,11 +29,11 @@ async def main() -> None:
         ),
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     # Subcommand: fetch
     parser_fetch = subparsers.add_parser("fetch", help="Fetch data")
-    fetch_subparsers = parser_fetch.add_subparsers(dest="fetch_command", required=True)
+    fetch_subparsers = parser_fetch.add_subparsers(dest="fetch_command")
 
     # Subcommand: fetch plans
     fetch_subparsers.add_parser("plans", help="Fetch scheme details")
@@ -60,6 +60,10 @@ async def main() -> None:
 
     args = parser.parse_args()
 
+    if not args.command:
+        parser.print_help()
+        return
+
     client = AmfiClient(
         parallel_requests=4,
         max_retries=3,
@@ -71,6 +75,10 @@ async def main() -> None:
 
     try:
         if args.command == "fetch":
+            if not getattr(args, "fetch_command", None):
+                parser_fetch.print_help()
+                return
+
             if args.fetch_command == "plans":
                 await app.save_fund_details()
 
@@ -98,5 +106,9 @@ async def main() -> None:
         logging.getLogger("amfi").warning("Interrupted by user")
 
 
-if __name__ == "__main__":
+def run() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()

@@ -184,3 +184,19 @@ async def test_client_context_manager_opens_and_closes() -> None:
     async with AmfiClient() as client:
         assert client._client is not None
     assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_scheme_aum_no_data_found() -> None:
+    from amfi.client import SchemeListItem
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": "No data found."})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http:
+        client = AmfiClient(client=http)
+        scheme = SchemeListItem(scheme_id="1", scheme_name="Test Scheme", mf_id="10")
+        rows = await client.fetch_scheme_aum(scheme)
+        assert rows == []
+

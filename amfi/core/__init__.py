@@ -1,6 +1,6 @@
-"""Compatibility shim re-exporting protocols from amfi.core.base."""
+"""Core interfaces and protocols for AMFI data and database models."""
 
-from ..core.base import (
+from .base import (
     Buildable,
     DedupView,
     DerivedTable,
